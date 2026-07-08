@@ -1,0 +1,40 @@
+# OpenComps local-dev Postgres image.
+# PostgreSQL 17 + PostGIS 3.5 + pgTAP + pg_prove.
+#
+# imresamu/postgis provides arm64-friendly PostGIS images for Apple Silicon
+# development.
+ARG PG_MAJOR=17
+ARG POSTGIS_VERSION=3.5
+FROM imresamu/postgis:${PG_MAJOR}-${POSTGIS_VERSION}-bookworm
+
+ARG PG_MAJOR=17
+
+ENV POSTGRES_PASSWORD=postgres
+
+# Build deps for pgTAP (source build; pgTAP is not available from PGDG apt)
+# plus pg_prove, the Perl TAP runner for pgTAP suites.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      build-essential \
+      ca-certificates \
+      curl \
+      git \
+      libdbd-pg-perl \
+      perl \
+      postgresql-server-dev-${PG_MAJOR}
+
+RUN git clone --depth 1 https://github.com/theory/pgtap.git /tmp/pgtap && \
+    cd /tmp/pgtap && make && make install && \
+    rm -rf /tmp/pgtap
+
+RUN curl -L -o /tmp/cpanm https://cpanmin.us && chmod +x /tmp/cpanm && \
+    /tmp/cpanm --notest TAP::Parser::SourceHandler::pgTAP && \
+    rm -f /tmp/cpanm
+
+# Keep runtime Perl + libdbd-pg-perl for pg_prove, remove build-only packages.
+RUN apt-get purge -y --auto-remove \
+      build-essential \
+      curl \
+      git \
+      postgresql-server-dev-${PG_MAJOR} && \
+    rm -rf /var/lib/apt/lists/*

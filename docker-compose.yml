@@ -1,0 +1,26 @@
+services:
+  pg:
+    build:
+      context: ./database
+      dockerfile: Dockerfile.postgres
+      args:
+        PG_MAJOR: "17"
+        POSTGIS_VERSION: "3.5"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+      - ./tests:/tests:ro
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-opencomps}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:
