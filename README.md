@@ -77,20 +77,8 @@ trails.
 
 SQL migrations in `supabase/migrations/`, targeting PostgreSQL 17+ and
 PostGIS 3.5+ (both bundled dev paths run PostgreSQL 18 + PostGIS 3.6).
-
-| Layer            | Tables                                                                                                                                                              |
-|------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Identity         | `properties`, `parcels`, `property_parcels`, `parcel_lineage`, `property_identifiers`, `jurisdictions`, `addresses`                                                 |
-| Classification   | `comp_types`, `property_types`, `property_type_mappings`, `classification_taxonomies`                                                                               |
-| Provenance       | `data_providers`, `source_records`, `data_verifications`                                                                                                            |
-| Reference data   | `us_zips`, `reference_dataset_loads`                                                                                                                                |
-| Physical         | `residential_details`, `commercial_details`, `land_details`, `structures`, `spaces`                                                                                 |
-| Owners           | `owners`, `owner_contacts`, `owner_addresses`                                                                                                                       |
-| Public records   | `property_transfers`, `ownership_periods`, `ownership_interests`, `assessments`, `tax_bills`, `property_mortgages`                                                  |
-| Comps            | `property_sales`, `property_leases`, `rent_escalations`, `lease_concessions`, `property_unit_rents`, `property_listings`, `valuations`, `income_expense_statements` |
-| Workflow         | `comp_sets`, `comp_set_items`, `users` (minimal, auth-agnostic)                                                                                                     |
-| Views            | `v_current_sources`, `v_current_ownership`, `v_property_sale_history`                                                                                               |
-| Search functions | `nearby_sales`, `nearby_unit_rents`, `comps_for_property`, `convert_area`                                                                                           |
+The full inventory of tables, views, and RPCs is in
+[docs/schema.md](docs/schema.md).
 
 ## Getting started
 
@@ -241,7 +229,16 @@ without raw SQL: `nearby_sales` and `nearby_unit_rents` anchor on
 `radius_m`; `comps_for_property` anchors on a subject property and adds
 appraisal-style culling — recency against an `as_of` effective date,
 arms-length-only by default, size and vintage brackets, strict property-type
-matching. Aggregates still need the SQL path.
+matching. Ingest gets the same treatment: `find_property` answers "is this
+property already in the database?" as a waterfall (normalized APN scoped by
+ZIP county, then address trigram similarity, then PostGIS proximity — each
+hit labeled `matched_by`), and `bulk_insert` takes
+`{"target": "<table>", "rows": [...]}` for multi-row writes from REST
+clients that can only send JSON object bodies. `convert_measure` converts
+lengths (`m`/`km`/`ft`/`yd`/`mi`), areas (`sqm`/`sqft`/`acre`/`hectare`),
+and per-area rates (`per_sqft`↔`per_sqm`) so clients can report
+`dist_meters` in miles or feed a miles radius into `radius_m` without
+doing the arithmetic. Aggregates still need the SQL path.
 
 The database persists in `.tinbase/pglite/` (gitignored).
 `rm -rf .tinbase` resets everything (next boot re-migrates; re-run

@@ -103,6 +103,15 @@ an experimental WASM build).
   `comps_for_property`: subject-anchored with as_of/sale-type/size/vintage
   filters; nearest-first, `22023` on bad arguments) — extend these rather
   than expecting PostGIS in PostgREST filters.
+- Duplicate prevention: `find_property(apn, zip, address, lat, long)`
+  is the waterfall existence check (parcel → address trigram → location;
+  `matched_by` reports the rung) — call it before creating identity rows;
+  time-series facts append to the matched property.
+- Multi-row writes for object-only REST clients go through the
+  `bulk_insert(target, rows)` RPC (payload-keyed column list so absent
+  columns keep DEFAULTs; vocabulary/reference tables refused, `22023`) —
+  clients that can send a top-level JSON array body may also POST it to
+  the table path directly.
 - Enums for closed sets (statuses, kinds); rows for open sets (comp types,
   property types, taxonomies). Comment open-vocabulary TEXT columns with
   example values.
