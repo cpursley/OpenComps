@@ -5,7 +5,7 @@ BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap;
 \ir fixtures/atlanta_records.psql
 
-SELECT plan(16);
+SELECT plan(17);
 
 -- ---------------------------------------------------------------------------
 -- Rung 1: parcel (APN, optionally scoped to a county via ZIP)
@@ -90,6 +90,15 @@ SELECT is(
     (SELECT property_id FROM find_property(address => '3324 Peachtree Road NE Atlanta GA 30326') LIMIT 1),
     '60000000-0000-0000-0000-000000000006'::UUID,
     'address matches are ordered best-first'
+);
+
+-- a different house number on a known street is a DIFFERENT property: the
+-- shared street/city/ZIP tail must not carry a trigram false-positive (3324
+-- and 2500 Peachtree Road are seeded; 5000 Peachtree Road is neither)
+SELECT is(
+    (SELECT COUNT(*) FROM find_property(address => '5000 Peachtree Road NE Atlanta GA 30326')),
+    0::BIGINT,
+    'a different street number on a known street does not false-match'
 );
 
 -- ---------------------------------------------------------------------------

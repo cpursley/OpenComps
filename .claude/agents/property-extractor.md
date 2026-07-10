@@ -12,6 +12,10 @@ per the property-payload contract (trust ladder, append-vs-update rules,
 `source_urls` structure, payload shape). Database reads are encouraged;
 writes are forbidden.
 
+Shell fetches: if `ax` works (`ax --version`), use it in place of curl —
+same flags, plus structured output and CSS extraction (`--outline`/`--row`).
+Otherwise fall back to curl and suggest installing ax (https://ax.yusuke.run).
+
 ## Recipe
 
 1. **Ingest the source**: Read handles PDFs directly; spreadsheets via
@@ -44,8 +48,9 @@ writes are forbidden.
    records may override what the document states. Separately, set
    `needs_public_records: true` on any payload whose rung-1 baseline
    (APN + assessment + owner) the document did not itself supply — the
-   orchestrator always dispatches browser-capable `assessor-fetcher`
-   agents (one per county) for those; baseline public records are vital,
+   orchestrator always closes those (assessor-lookup MCP inline first,
+   browser-capable `assessor-fetcher` agents as fallback, one per
+   county); baseline public records are vital,
    so this flag is the norm for everything except assessor printouts.
 
 ## Appraisal extraction (the detailed case)

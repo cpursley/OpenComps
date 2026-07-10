@@ -179,6 +179,9 @@ It authenticates with the `service_role` key from the `pnpm dev` output.
 - **ChatGPT** — connectors only accept remote HTTP MCP servers, so a
   localhost dev database doesn't apply.
 
+Note: querying goes through the Supabase MCP server for now; a dedicated
+OpenComps MCP server will replace it once the schema and API stabilize.
+
 #### Agent skill
 
 `.claude/skills/opencomps/SKILL.md` teaches an AI agent the whole surface

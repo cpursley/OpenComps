@@ -28,6 +28,24 @@ value (→ `assessments`, keyed by parcel + tax year); an appraisal is a
 professional opinion of value (→ `valuations`,
 `valuation_kind: 'appraisal'`). Never conflate them.
 
+## When a public-records lookup fails
+
+A `not_found`/`ambiguous`/error from an assessor lookup (the
+assessor-lookup MCP, a county portal search, a GIS query) is a prompt to
+escalate, not a dead end. Work the ladder in order; parcel identity
+always beats address identity:
+
+1. **Normalize the address** and retry: strip city/state/ZIP, spell
+   suffixes the county's way (`Street`↔`ST`), keep directionals
+   (`S Nucla St` — Aurora also has a `S Nucla Way`), drop unit markers.
+2. **Resolve the APN/parcel independently** — county GIS/ArcGIS parcel
+   layer query, county parcel-search site, or a web search for
+   `"<address>" parcel OR APN` — then retry the lookup **by parcel**.
+3. Record the resolved APN in `parcel_chain.parcel_number` and note in
+   `notes` which rung of the ladder resolved it; a repeated failure on a
+   well-formed address is worth reporting as a tooling defect, not
+   silently working around.
+
 ## Existing records: append vs update
 
 Always check first: `POST /rpc/find_property` with the strongest identity
@@ -90,6 +108,9 @@ Omit `details`/`parcel_chain`/`updates` when nothing sourced them. Set
 research pass would materially complete the record. Set
 `needs_public_records: true` when the rung-1 baseline (APN + assessment
 + owner of record) is missing or came from a lower rung — the
-orchestrator dispatches a browser-capable `assessor-fetcher` (one per
-county) to close it; the fetcher's fragments merge into the property's
-payload at the funnel, rung-1 facts winning.
+orchestrator closes it cheapest-door-first: the `assessor-lookup` MCP
+inline when connected and covering the county, and a browser-capable
+`assessor-fetcher` (one per county) only when the MCP is absent,
+uncovered, or fails outright — an MCP success closes the flag even if
+some of its fields are null. The rung-1 fragments merge into
+the property's payload at the funnel, rung-1 facts winning.

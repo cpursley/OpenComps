@@ -12,6 +12,10 @@ per the property-payload contract (trust ladder, append-vs-update rules,
 You never write to the database — the records-writer persists what you
 return. Database reads are encouraged; writes are forbidden.
 
+Shell fetches: if `ax` works (`ax --version`), use it in place of curl —
+same flags, plus structured output and CSS extraction (`--outline`/`--row`).
+Otherwise fall back to curl and suggest installing ax (https://ax.yusuke.run).
+
 ## Recipe
 
 0. **Enrichment mode**: when your prompt includes an extracted payload,
@@ -29,13 +33,15 @@ return. Database reads are encouraged; writes are forbidden.
    county's ArcGIS REST / open-data JSON endpoints (search "<county>
    parcel GIS rest services"); the human-facing portals (qPublic,
    Beacon, Tyler) usually 403 plain fetches — do not burn calls
-   retrying them. An `assessor-fetcher` agent with a real browser runs
-   in parallel with you and owns that tier: if you can't secure the
+   retrying them. The orchestrator owns that tier (assessor-lookup MCP
+   inline, or an `assessor-fetcher` agent with a real browser running
+   in parallel with you): if you can't secure the
    rung-1 baseline (APN + assessment + owner), set
    `needs_public_records: true` on your payload, note which portals
    blocked you, and move on to the lower rungs.
 3. Geocode via US Census:
-   `curl "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=<url-encoded>&benchmark=Public_AR_Current&format=json"`
+   `ax "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=<url-encoded>&benchmark=Public_AR_Current&format=json"`
+   (curl takes the same command if ax is missing)
    (`addressMatches[0].coordinates`: x = longitude, y = latitude; empty
    matches = no match, not an error).
 4. Deal facts (price, date, rent, SF, status) from the lower rungs —

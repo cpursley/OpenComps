@@ -19,9 +19,22 @@ Two paths to the same database (dev server: `pnpm dev` in the OpenComps repo):
 | `supabase` MCP (`postgrestRequest`) | `http://127.0.0.1:54321/rest/v1` | CRUD, embedded joins, RPC calls |
 | psql | `postgres://postgres@127.0.0.1:55432/postgres` | Aggregates (`AVG`/`GROUP BY` — REST can't), transactions, `EXPLAIN`, introspection |
 
+**MCP first.** `postgrestRequest` is the primary path for every read,
+write, and RPC; drop to psql only for what REST genuinely can't do
+(aggregates, introspection, `EXPLAIN`, multi-statement transactions). A
+dedicated OpenComps MCP server will eventually replace raw PostgREST —
+keep interactions MCP-shaped so that swap is a rename, not a rewrite.
+
 `sqlToRest` translates simple SELECTs only: no INSERT, no PostGIS in
 WHERE, no boolean constants. One psql session at a time (PGlite is
 single-writer). Docker path instead: `postgres://postgres:postgres@localhost:5432/opencomps`.
+
+**No DDL, ever.** Interacting with the database means reading and writing
+rows only — never `CREATE`/`ALTER`/`DROP` tables, views, functions,
+indexes, or any other schema object, via psql or any other path. The
+schema changes exclusively through migration files in the repo
+(`supabase/migrations/`), reviewed and applied by the developer. If a
+task seems to need a schema change, stop and say so instead.
 
 The no-aggregates-over-REST rule is a **tinbase limitation**, not a
 PostgREST one. Against regular Supabase (hosted or `supabase start`),
@@ -95,7 +108,29 @@ Views: `v_current_sources`, `v_current_ownership`, `v_property_sale_history`.
 - `property_listings` — active for-sale/for-lease listings (`listing_kind`).
 - `valuations` — appraisal/AVM/BPO opinions, not transactions.
 - `property_transfers` — **all** deed transfers including quitclaims;
-  never treat as comps. Market sales live in `property_sales`.
+  never treat as comps. Market sales live in `property_sales` (whose
+  `transfer_id` points back at the deed). Typed columns: `transfer_kind`
+  (open vocabulary — `'warranty_deed'`, `'grant_deed'`, `'quitclaim'`,
+  `'trustee_deed'`, `'foreclosure'`, `'tax_deed'`, ...),
+  `recorded_on`/`effective_on`, `consideration` ($0/nominal is normal
+  for many deeds), `document_number`, `book_page`,
+  `grantor_name`/`grantee_name` plus optional
+  `grantor_owner_id`/`grantee_owner_id` FKs to `owners`, `parcel_id`,
+  `source_record_id`, `metadata`, `verification_status`.
+
+**Provenance columns vary per table — check before writing** (real-use
+gotcha): `source_url` exists ONLY on `property_unit_rents`. Free-form
+`metadata` JSONB exists on `property_transfers`, `assessments`,
+`property_listings`, `valuations`, `property_mortgages`, and the
+identity rows (`properties`, `parcels`, `addresses`, `owners`,
+`structures`, `spaces`, `jurisdictions`) — but NOT on `property_sales`,
+`property_leases`, or `property_unit_rents` (governed `metrics` only —
+undefined keys rejected, see below), nor on `tax_bills`,
+`income_expense_statements`, `ownership_periods`/`ownership_interests`,
+`rent_escalations`, `lease_concessions`, or the `*_details` tables
+(overflow there is `extras`). Where neither column exists, provenance
+rides `source_record_id` → a `source_records` row (`provider_id` →
+`data_providers`; `raw_payload` holds the fetched data and URL).
 
 **Canonical vocabulary** (fixed UUIDs; reference by code, never insert new):
 `comp_types` `30000000-0000-0000-0000-00000000000N`, N = 1 residential,
@@ -171,8 +206,11 @@ Record only what the source states — leave unknown fields NULL rather
 than inventing plausible values (a "2BR" listing with unknown baths is
 `unit_type: "2BR"`, `bathrooms: null`). Column lists in this skill are
 the load-bearing subset; before inserting into a table not detailed
-here, `GET /<table>?limit=1` to see live column names (REST has no
-other introspection).
+here, `GET /<table>?limit=1` to see live column names — but an **empty
+table returns `[]` with no columns**. In that case read the table's
+`CREATE TABLE` in `supabase/migrations/` (reading the schema is always
+fine — the no-DDL rule is about writes), or `psql <url> -c '\d <table>'`
+where psql is available.
 
 - `addresses`: `address_hash` is required — canonical recipe:
   `md5(lower('<number> <name> <suffix> <post-directional>, <locality>, <region> <postal_code>'))`,
@@ -184,9 +222,12 @@ other introspection).
   `street_post_directional`, `locality`, `region`, `postal_code`.
 - Geography columns (`location` on addresses/properties) accept EWKT
   strings: `"SRID=4326;POINT(-84.363 33.741)"` (lon first). Geocode free,
-  no API key, via US Census: `curl "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=<url-encoded one-line address>&benchmark=Public_AR_Current&format=json"`
+  no API key, via US Census: `ax "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=<url-encoded one-line address>&benchmark=Public_AR_Current&format=json"`
   — `addressMatches[0].coordinates` has `x` = longitude, `y` = latitude
   (US addresses only; empty `addressMatches` means no match, not an error).
+  Shell fetches here and elsewhere use `ax` when installed (`ax --version`
+  to check); no ax? The same command works with curl — use that and suggest
+  installing ax (https://ax.yusuke.run).
 - Public-records chain, in FK order: `jurisdictions` (one county row:
   `country 'US'`, `region`, `kind 'county'`, `authority_code` = 5-digit
   county FIPS from `us_zips`, above; unique on country+kind+code — GET
@@ -197,12 +238,35 @@ other introspection).
   `reso_upi` is generated — never set) → `property_parcels`
   (`property_id`, `parcel_id`, `is_primary`) → `assessments` and
   `tax_bills` (both keyed by `parcel_id` + `jurisdiction_id` +
-  `tax_year`).
-- Provenance on every row, always: events get `observed_on`/event date
-  and the primary `source_url`; additional contributing URLs go in the
-  event's `metadata.source_urls`. Identity rows created from research
-  (`properties`, details, parcels) have no `source_url` column — record
-  contributing URLs in their `metadata.source_urls`. Structure:
+  `tax_year`). Ownership timeline: `ownership_periods` (`property_id`,
+  `started_on`/`ended_on` — `[start, end)`, end exclusive;
+  `acquired_via_transfer_id`/`disposed_via_transfer_id`,
+  `source_record_id`, `verification_status`) with one
+  `ownership_interests` row per member (`ownership_period_id`,
+  `owner_id`, `ownership_pct`, `vesting`, `role`, `is_owner_occupied`).
+- Details tables (PK = `property_id`, one row per property; overflow in
+  `extras`, no `metadata`): `residential_details` (`gla`, `bedrooms`,
+  `bathrooms` + `bathrooms_full`/`_half`, `unit_count`, `stories`,
+  `year_built`/`year_renovated`, `lot_size`, `garage_spaces`,
+  `basement_area`, `condition_rating`/`quality_rating` UAD);
+  `commercial_details` (`rentable_building_area`,
+  `gross_building_area`, `land_area`, `stories`, `year_built`,
+  `unit_count`, `occupancy_pct`, `parking_spaces`, `clear_height`,
+  `dock_doors`, `tenancy`, `building_class`, `zoning`, `submarket`);
+  `land_details` (`lot_size`, `zoning`, `land_use`,
+  `frontage`/`depth`, `topography`, `utilities` TEXT[], `flood_zone`,
+  `entitlement_status`, `buildable_units`, `is_corner`).
+- Provenance on every row, always — route it by the columns the table
+  actually has (matrix in "Which event table", above): events get
+  `observed_on`/the event date; `property_unit_rents` gets the primary
+  `source_url`. Tables with `metadata` (listings, transfers,
+  assessments, valuations, mortgages; identity rows like `properties`
+  and `parcels`) record contributing URLs in `metadata.source_urls`
+  (details tables: `extras.source_urls`). Tables with neither
+  (`property_sales`, `property_leases`, `tax_bills`, ownership rows)
+  need a `data_providers` + `source_records` chain: insert the
+  `source_records` row (URL in `raw_payload`) and set the event's
+  `source_record_id`. `metadata.source_urls` structure:
   `[{"url": "...", "retrieved_on": "YYYY-MM-DD"}]`, listing only pages a
   saved fact actually came from. A saved record whose sources can't be
   traced is a defect. Leave
@@ -240,23 +304,45 @@ double-create shared rows like `jurisdictions`, and fight PGlite's
 single-writer socket. Cross-payload dedup (two sources, same property)
 only works where all payloads are visible together: at the funnel.
 
-**Baseline public records are vital — always dispatch
-`assessor-fetcher`.** Every research/ingest fan-out includes
-browser-capable `assessor-fetcher` agents, one per county (group the
-properties by `us_zips` county first), launched in the same parallel
-message as the researchers. Researchers have no browser and routinely
-lose the assessor tier to bot-blocking (qPublic/Beacon 403s); the
-fetcher escalates direct API → playwright browser → the user's Chrome
-session → computer use and returns rung-1 fragments: APN, assessments,
-tax bills, owner, **and the deed/sales history the assessor prints**
-(every transfer → `property_transfers`; the qualified/arms-length
-priced ones → `property_sales` too). Those recorded sales are baseline
-public data, not a researcher's job — save them alongside the
-assessments, never drop them. Merge at
-the funnel: the fetcher's rung-1 facts win over anything a researcher
-or document supplied, per the contract's trust ladder. Skip the
-dispatch only when rung-1 baseline is already in the database or the
-source itself is an assessor record.
+**Baseline public records are vital — every ingest gets the rung-1
+tier, cheapest door first.** Researchers have no browser and routinely
+lose the assessor tier to bot-blocking (qPublic/Beacon 403s), so the
+orchestrator owns this tier. Order of attack, per county (group the
+properties by `us_zips` county first):
+
+1. **`assessor-lookup` MCP, when connected** (`mcp__assessor-lookup__*`):
+   check coverage with `list_counties`, then call `lookup_property`
+   inline per property (calls parallelize). **A `status: "success"`
+   result IS the rung-1 record and TERMINATES this tier for that
+   property — never dispatch an `assessor-fetcher` after a success, no
+   matter how many fields came back null.** Null fields mean the
+   county's feed doesn't carry them; leave them NULL or let lower-rung
+   sources (researcher, document) fill them at the funnel. Retry once
+   on transient transport errors (timeouts, SSL) before treating a call
+   as failed. Known limits — current-year snapshot only, no multi-year
+   history, tax bills, or deed/sales ledger — are accepted for a
+   routine ingest; a fetcher may top those up ONLY when the user
+   explicitly asked for them, and even then it skips everything the MCP
+   already answered. For unsupported counties,
+   `onboard_county`/`discover_county` can often add coverage in one
+   call — worth trying before falling back.
+2. **`assessor-fetcher` agents — the fallback**: one per county, in the
+   same parallel message as the researchers, ONLY when the MCP is
+   absent, doesn't cover the county (and discovery failed), or returns
+   `not_found`/an error that survives a retry. A sparse success is not
+   a trigger. The fetcher escalates
+   direct API → playwright browser → the user's Chrome session →
+   computer use and returns rung-1 fragments: APN, assessments, tax
+   bills, owner, **and the deed/sales history the assessor prints**
+   (every transfer → `property_transfers`; the qualified/arms-length
+   priced ones → `property_sales` too). Those recorded sales are
+   baseline public data, not a researcher's job — save them alongside
+   the assessments, never drop them.
+
+Merge at the funnel: rung-1 facts (MCP or fetcher) win over anything a
+researcher or document supplied, per the contract's trust ladder. Skip
+the tier entirely only when rung-1 baseline is already in the database
+or the source itself is an assessor record.
 
 **Shared documents & URLs** (a PDF/XLSX/CSV or a pasted link —
 appraisals, comp sheets, rent surveys, offering memos): dispatch a
@@ -264,8 +350,10 @@ appraisals, comp sheets, rent surveys, offering memos): dispatch a
 subject and every comp as contract payloads (appraisals map approach
 values onto `valuations`), and flags gappy payloads `needs_research` /
 `needs_public_records`. Then fan out one
-`property-researcher` per research-flagged payload plus one
-`assessor-fetcher` per county (parallel, single message) to
+`property-researcher` per research-flagged payload and close the
+public-records gaps per county via the rung-1 order of attack above
+(`assessor-lookup` MCP inline first, `assessor-fetcher` fallback,
+parallel with the researchers) to
 fill the gaps — the document outranks everything the research finds
 except public entity records — and funnel the completed payloads to the
 writer. Ambiguity gets one question for the whole document, never per
@@ -275,7 +363,8 @@ row.
 of per-address calls — CSV with columns `id,street,city,state,zip`, then
 `curl -s -F addressFile=@batch.csv -F benchmark=Public_AR_Current
 "https://geocoding.geo.census.gov/geocoder/locations/addressbatch"`
-returns a CSV of matches (up to 10k rows per call).
+returns a CSV of matches (up to 10k rows per call). curl on purpose here:
+ax has no multipart `-F` support.
 
 ## Comp sets (saving a comp selection)
 
@@ -288,7 +377,8 @@ is reproducible. `comp_set_items` is polymorphic: `comp_kind`
 `comp_id` points into (`property_sales.id` for `'sale'`, etc.);
 `position` orders the set; `selection_source` is `'user'`,
 `'ai_suggested'` (use this when an RPC or agent picked the comp), or
-`'imported'`; per-item `notes` hold the rationale.
+`'imported'`; per-item `notes` hold the rationale, and each item also
+carries a free-form `metadata` JSONB.
 `(comp_set_id, comp_kind, comp_id)` is unique — no duplicate members.
 Read a set back embedded:
 `GET /comp_sets?select=name,effective_date,comp_set_items(position,comp_kind,comp_id,notes)&subject_property_id=eq.<id>`.

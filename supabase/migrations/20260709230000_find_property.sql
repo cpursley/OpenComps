@@ -76,8 +76,17 @@ BEGIN
         FROM addresses a
         JOIN properties p ON p.situs_address_id = a.id
         -- % is the trigram-indexed operator; the explicit similarity guard
-        -- keeps behavior fixed if the pg_trgm.similarity_threshold GUC moves
+        -- keeps behavior fixed if the pg_trgm.similarity_threshold GUC moves.
+        -- The leading street number must also agree: in a sparse database a
+        -- shared "<locality> <region> <postal>" tail alone clears the trigram
+        -- threshold, so without this guard a different house on the same
+        -- street (or even just the same town) false-matches. Compare leading
+        -- digits on both sides so "855 Emory Point Dr" still matches stored
+        -- street_number "855" across formatting differences.
         WHERE a.full_address % find_property.address
+          AND substring(find_property.address FROM '^\s*(\d+)') IS NOT NULL
+          AND substring(find_property.address FROM '^\s*(\d+)')
+              = substring(a.street_number FROM '^\s*(\d+)')
           AND similarity(a.full_address, find_property.address) > 0.3
         ORDER BY similarity(a.full_address, find_property.address) DESC
         LIMIT 5;
